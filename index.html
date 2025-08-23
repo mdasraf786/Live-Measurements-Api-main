@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Best Fit Size Finder</title>
+</head>
+<body>
+  <h2>Upload Images to Get Best Fit Size</h2>
+
+  <form id="uploadForm" method="POST" enctype="multipart/form-data">
+    <label>Front Image:</label>
+    <input type="file" name="front" accept="image/*" required><br><br>
+
+    <label>Size Chart:</label>
+    <input type="file" name="size_chart" accept="image/*" required><br><br>
+
+    <!-- Optional fields -->
+    <label>Height (cm):</label>
+    <input type="number" name="height_cm" placeholder="170"><br><br>
+
+    <label>Side Image (optional):</label>
+    <input type="file" name="left_side" accept="image/*"><br><br>
+
+    <button type="submit">Get Best Fit</button>
+  </form>
+
+  <hr>
+  <div id="result"></div>
+
+  <script>
+    document.getElementById("uploadForm").addEventListener("submit", async function(e) {
+      e.preventDefault();
+
+      let formData = new FormData(this);
+
+      // 🔹 Debug: check FormData contents
+      for (let pair of formData.entries()) {
+        console.log(pair[0], pair[1]);
+      }
+
+      try {
+        let response = await fetch("http://127.0.0.1:8001/measurements", {
+          method: "POST",
+          body: formData,
+          mode: "cors"
+        });
+
+        if (!response.ok) {
+          throw new Error(`Server returned ${response.status}`);
+        }
+
+        let result = await response.json();
+
+        document.getElementById("result").innerHTML = `
+          <h3>Best Fit Size: ${result.best_size || "Not Found"}</h3>
+          <h4>Measurements:</h4>
+          <ul>
+            ${Object.entries(result.measurements || {})
+              .map(([k, v]) => `<li><b>${k}</b>: ${v}</li>`)
+              .join("")}
+          </ul>
+        `;
+      } catch (err) {
+        console.error(err);
+        document.getElementById("result").innerHTML =
+          `<p style="color:red;">Request failed: ${err.message}</p>`;
+      }
+    });
+  </script>
+</body>
+</html>
