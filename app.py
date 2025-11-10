@@ -149,32 +149,79 @@ import re
 def extract_size_chart(size_chart_image_bytes):
     """Extracts size chart data from an image using OCR and returns a dict."""
     image = Image.open(io.BytesIO(size_chart_image_bytes))
-    text = pytesseract.image_to_string(image)
+    
+    # Use PSM 6 (Assume a single uniform block of text) and PSM 3 (default) if 6 fails
+    custom_config = r'--psm 6' 
+    text = pytesseract.image_to_string(image, config=custom_config)
+    
     size_chart = {}
     lines = text.splitlines()
-    header = None
+    header_found = False
+    
+    # Define the keys in the expected order
+    EXPECTED_KEYS = ['chest_width', 'length', 'shoulder_width']
+    
     for line in lines:
         line = line.strip()
         if not line:
             continue
-        if not header and re.search(r"size", line, re.I):
-            header = [h.strip().lower() for h in re.split(r"\s+", line)]
+
+        # 1. Look for a Header (less strict pattern)
+        # Search for 'Size' OR 'Siz' OR 'Chest' OR 'Width'
+        if not header_found and re.search(r"(size|siz|chest|width|length)", line, re.I):
+            header_found = True
+            # We don't rely on OCR column names, only its position.
             continue
-        if header:
-            parts = re.split(r"\s+", line)
-            if len(parts) >= 2:
+            
+        # 2. Parse data lines after a potential header is found
+        # OR if the line looks like size data (starts with S, M, L, X and has numbers)
+        if header_found or re.match(r"[SMLX]\s+\d+(\.\d+)?", line, re.I):
+            
+            # Use a broader split pattern to handle variable spacing (spaces, tabs, commas)
+            # Replaces one or more whitespace/comma sequences with a single space, then splits.
+            cleaned_line = re.sub(r'[\s,]+', ' ', line.strip())
+            parts = cleaned_line.split(' ')
+            
+            # Filter out empty strings and non-numeric characters from the parts list
+            parts = [p.strip() for p in parts if p.strip()]
+
+            # We need at least the Size label + 3 numerical values (4 items total)
+            if len(parts) >= 4:
                 size = parts[0].upper()
-                try:
-                    values = {header[i+1]: float(parts[i+1]) for i in range(len(parts)-1)}
-                    size_chart[size] = values
-                except Exception:
+                
+                # Check if the first part is actually a size label (S, M, L, XL, etc.)
+                if not re.match(r'^[SMLX][XS]*[L]*[0-9]*$', size):
                     continue
+                    
+                values = {}
+                try:
+                    # The parts list should be [Size, Measure1, Measure2, Measure3, ...]
+                    
+                    # We only care about the first 3 numeric values following the size.
+                    for i in range(len(EXPECTED_KEYS)):
+                        key = EXPECTED_KEYS[i]
+                        # Use parts index i+1 to skip the 'Size' label (index 0)
+                        if i + 1 < len(parts):
+                            values[key] = float(parts[i + 1])
+                    
+                    # Double-check: ensure we got exactly the 3 required measurements
+                    if len(values) == 3:
+                         size_chart[size] = values
+                         
+                except ValueError as e:
+                    # This happens if parts[i+1] is non-numeric, like a 'cm' or 'in' label
+                    # print(f"Skipping line: {line} due to non-numeric data: {e}") 
+                    continue
+                except Exception as e:
+                    print(f"Skipping line: {line} due to error: {e}") 
+                    continue
+                    
     return size_chart
 
 def find_best_size(measurements, size_chart):
     """
     Finds the closest size from the size chart 
-    based on chest_width (×2), shirt_length, shoulder_width.
+    based on chest_width (×2), length, shoulder_width.
     """
     if not size_chart:
         return None
@@ -191,8 +238,8 @@ def find_best_size(measurements, size_chart):
             score += abs(chest_circ - values["chest_width"])
 
         # Shirt length
-        if "shirt_length" in measurements and "shirt_length" in values:
-            score += abs(measurements["shirt_length"] - values["shirt_length"])
+        if "length" in measurements and "length" in values:
+            score += abs(measurements["length"] - values["length"])
 
         # Shoulder width
         if "shoulder_width" in measurements and "shoulder_width" in values:
@@ -345,15 +392,15 @@ def calculate_measurements(results, scale_factor, image_width, image_height, dep
     neck = landmarks[mp_pose.PoseLandmark.NOSE.value]
     left_ear = landmarks[mp_pose.PoseLandmark.LEFT_EAR.value]
     neck_width_px = abs(neck.x * image_width - left_ear.x * image_width) * 2.0
-    measurements["neck"] = calculate_circumference(neck_width_px, 1.0)
+    measurements["neck"] = calculate_circumference(neck_width_px, 1.0) / 2.54  # Convert to inches
     measurements["neck_width"] = pixel_to_cm(neck_width_px) / 2.54  # Convert to inches
 
     left_wrist = landmarks[mp_pose.PoseLandmark.LEFT_WRIST.value]
     sleeve_length_px = abs(left_shoulder.y * image_height - left_wrist.y * image_height)
     measurements["arm_length"] = pixel_to_cm(sleeve_length_px) / 2.54  # Convert to inches
 
-    shirt_length_px = abs(left_shoulder.y * image_height - left_hip.y * image_height) * 1.2
-    measurements["shirt_length"] = pixel_to_cm(shirt_length_px) / 2.54  # Convert to inches
+    length_px = abs(left_shoulder.y * image_height - left_hip.y * image_height) * 1.2
+    measurements["length"] = pixel_to_cm(length_px) / 2.54  # Convert to inches
 
      # Thigh Circumference (improved with depth information)
     thigh_y_ratio = 0.2  # 20% down from hip to knee
@@ -546,6 +593,7 @@ def upload_images():
                 size_chart_bytes = size_chart_file.read()
                 size_chart_file.seek(0)
                 size_chart = extract_size_chart(size_chart_bytes)
+                print("OCR Extracted Size Chart:", size_chart)
                 size = find_best_size(measurements, size_chart)
             except Exception as e:
                 print("Error processing size chart:", e)
